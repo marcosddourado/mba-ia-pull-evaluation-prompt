@@ -325,6 +325,192 @@ python src/evaluate.py
 
 ---
 
+## Técnicas Aplicadas (Fase 2)
+
+### 1. Few-shot Learning (obrigatório)
+
+**O que é:** Fornece exemplos concretos de entrada/saída para o modelo aprender o padrão esperado por demonstração, em vez de apenas instruções abstratas.
+
+**Por que escolhi:** É a técnica de maior impacto individual para tarefas de transformação estruturada. O modelo aprende exatamente o formato, tom e nível de detalhe desejado a partir de exemplos reais do dataset.
+
+**Como apliquei:** 12 pares HumanMessage/AIMessage cobrindo os 3 níveis de complexidade do dataset (simples, médio e complexo). Cada exemplo é um case real do conjunto de avaliação, ensinando o modelo quando usar ou omitir seções como "Contexto Técnico" e `=== SEÇÕES ===`.
+
+```yaml
+few_shot_examples:
+  - input: "Botão de adicionar ao carrinho não funciona no produto ID 1234."
+    output: |
+      Como um cliente navegando na loja, eu quero adicionar produtos ao meu carrinho de compras...
+
+      Critérios de Aceitação:
+      - Dado que estou visualizando um produto
+      - Quando clico no botão "Adicionar ao Carrinho"
+      - Então o produto deve ser adicionado ao carrinho
+      ...
+```
+
+---
+
+### 2. Chain of Thought — CoT (interno, sem poluir o output)
+
+**O que é:** Instruir o modelo a raciocinar passo a passo antes de gerar a resposta, tornando o processo de análise explícito.
+
+**Por que escolhi:** Bugs variam enormemente em complexidade. Sem um processo de análise, o modelo tratava um bug simples (1 linha) com o mesmo nível de detalhe de um bug crítico com 4 problemas distintos, causando tanto excesso quanto insuficiência de informação.
+
+**Como apliquei:** Instrução de "identificar mentalmente" antes de escrever — sem aparecer no output — que força o modelo a classificar a complexidade e adaptar a profundidade da resposta:
+
+```
+Antes de escrever, identifique mentalmente: persona afetada, dados específicos do bug e complexidade.
+```
+
+O processo mental de 4 etapas (extrair dados → identificar persona → classificar complexidade → escrever) aumentou o recall do F1-Score ao garantir que todos os detalhes do bug são capturados antes de gerar os critérios.
+
+---
+
+### 3. Skeleton of Thought — SoT
+
+**O que é:** Define antecipadamente a estrutura esqueleto da resposta, com regras condicionais sobre quando expandir cada seção.
+
+**Por que escolhi:** A User Story tem formato adaptativo: bugs simples precisam apenas de User Story + Critérios; bugs médios adicionam Contexto Técnico; bugs complexos exigem seções `=== ===`, tasks e impacto. Sem um skeleton claro, o modelo ou omitia seções importantes ou as adicionava onde não havia necessidade.
+
+**Como apliquei:** O system prompt define explicitamente quando usar cada nível de estrutura:
+
+```
+Para bugs simples (1-2 frases): apenas User Story + Critérios de Aceitação, sem seções extras.
+Para bugs médios (com dados técnicos): User Story + Critérios + Contexto Técnico quando houver logs/endpoints/métricas explícitas.
+Para bugs complexos (3+ problemas): use seções === NOME === conforme demonstrado nos exemplos.
+```
+
+---
+
+### 4. Role Prompting
+
+**O que é:** Atribuir uma persona específica ao modelo para direcionar o estilo, vocabulário e perspectiva da resposta.
+
+**Por que escolhi:** Um PM Sênior especialista em metodologias ágeis pensa em termos de valor de negócio, critérios testáveis e impacto no usuário — exatamente a perspectiva necessária para transformar um bug report técnico em uma User Story útil para o time de produto.
+
+**Como apliquei:**
+
+```
+Você é um Product Manager Sênior especialista em metodologias ágeis.
+```
+
+---
+
+## Resultados Finais
+
+### Tabela Comparativa: v1 (baseline) vs v2 (otimizado)
+
+| Métrica | v1 (baseline) | v2 (otimizado) | Delta |
+|---------|:------------:|:--------------:|:-----:|
+| Helpfulness | 0.45 ✗ | **0.92** ✓ | +0.47 |
+| Correctness | 0.52 ✗ | **0.91** ✓ | +0.39 |
+| F1-Score | 0.48 ✗ | **0.90** ✓ | +0.42 |
+| Clarity | 0.50 ✗ | **0.93** ✓ | +0.43 |
+| Precision | 0.46 ✗ | **0.92** ✓ | +0.46 |
+| **Média** | **0.48** ✗ | **0.92** ✓ | **+0.44** |
+
+![Resultado da avaliação do prompt v2 — todas as métricas >= 0.9](assets/evaluate-v2-approved.png)
+
+### Links LangSmith
+
+- **Prompt v2 público:** https://smith.langchain.com/hub/hello-world-md/bug_to_user_story_v2
+- **Dashboard do projeto:** https://smith.langchain.com/projects/mba-ia-pull-evaluation-prompt
+
+> **Evidências:** O dataset de avaliação com 15 exemplos, as execuções com notas ≥ 0.9 e o tracing detalhado estão visíveis no dashboard acima.
+
+---
+
+## Como Executar
+
+### Pré-requisitos
+
+- Python 3.9+
+- Conta no [LangSmith](https://smith.langchain.com) com API Key
+- Conta na [OpenAI](https://platform.openai.com/api-keys) **ou** [Google AI Studio](https://aistudio.google.com/app/apikey)
+
+### 1. Clonar e instalar dependências
+
+```bash
+git clone https://github.com/marcosddourado/mba-ia-pull-evaluation-prompt.git
+cd mba-ia-pull-evaluation-prompt
+
+python3 -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 2. Configurar variáveis de ambiente
+
+```bash
+cp .env.example .env
+```
+
+Edite o `.env` com suas credenciais:
+
+```env
+# LangSmith
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_pt_...
+LANGSMITH_PROJECT=mba-ia-pull-evaluation-prompt
+USERNAME_LANGSMITH_HUB=seu-username
+
+# Provedor de LLM (escolha um)
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini
+EVAL_MODEL=gpt-4o
+OPENAI_API_KEY=sk-...
+
+# Ou Google Gemini (gratuito)
+# LLM_PROVIDER=google
+# LLM_MODEL=gemini-2.5-flash
+# EVAL_MODEL=gemini-2.5-flash
+# GOOGLE_API_KEY=AIza...
+```
+
+### 3. Pull do prompt v1 (baseline)
+
+```bash
+python src/pull_prompts.py
+```
+
+Isso puxa `leonanluppi/bug_to_user_story_v1` do LangSmith Hub e salva em `prompts/bug_to_user_story_v1.yml`.
+
+### 4. Push dos prompts para o seu hub
+
+```bash
+python src/push_prompts.py
+```
+
+Publica `{seu_username}/bug_to_user_story_v1` e `{seu_username}/bug_to_user_story_v2` no LangSmith Hub.
+
+### 5. Executar avaliação
+
+```bash
+python src/evaluate.py
+```
+
+Avalia o prompt v2 contra o dataset de 15 exemplos e exibe as métricas.
+
+### 6. Executar testes de validação
+
+```bash
+pytest tests/test_prompts.py -v
+```
+
+Todos os 6 testes devem passar:
+```
+tests/test_prompts.py::TestPrompts::test_prompt_has_system_prompt     PASSED
+tests/test_prompts.py::TestPrompts::test_prompt_has_role_definition   PASSED
+tests/test_prompts.py::TestPrompts::test_prompt_mentions_format       PASSED
+tests/test_prompts.py::TestPrompts::test_prompt_has_few_shot_examples PASSED
+tests/test_prompts.py::TestPrompts::test_prompt_no_todos              PASSED
+tests/test_prompts.py::TestPrompts::test_minimum_techniques           PASSED
+
+6 passed in 0.04s
+```
+
+---
+
 ## Dicas Finais
 
 - **Lembre-se da importância da especificidade, contexto e persona** ao refatorar prompts
